@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef } from "react";
 
-const CATEGORIES = [
+const DEFAULT_CATEGORIES = [
   { id: "housing", label: "Housing", icon: "🏠", color: "#6366f1" },
   { id: "food", label: "Food", icon: "🍽️", color: "#f59e0b" },
   { id: "transport", label: "Transport", icon: "🚗", color: "#10b981" },
@@ -10,10 +10,11 @@ const CATEGORIES = [
   { id: "other", label: "Other", icon: "📦", color: "#6b7280" },
 ];
 
+const COLORS = ["#6366f1","#f59e0b","#10b981","#ef4444","#8b5cf6","#06b6d4","#f43f5e","#84cc16","#fb923c","#a78bfa","#34d399","#60a5fa"];
+const ICONS = ["🏠","🍽️","🚗","💊","🎬","💰","📦","✈️","👕","🐾","📚","🎮","💼","🏋️","☕","🛒","💡","🎁","🍺","💻"];
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const fmt = (n) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);
 
-// Chase CSV: Transaction Date, Post Date, Description, Category, Type, Amount, Memo
 const CHASE_CAT_MAP = {
   "food & drink": "food", "groceries": "food", "restaurants": "food",
   "gas": "transport", "automotive": "transport", "travel": "transport",
@@ -25,21 +26,23 @@ const CHASE_CAT_MAP = {
   "fees & adjustments": "other", "gifts & donations": "other", "professional services": "other",
 };
 
-function guessCategory(chaseCategory, description) {
+function guessCategory(chaseCategory, description, categories) {
   const lower = (chaseCategory || "").toLowerCase();
   const desc = (description || "").toLowerCase();
+  const ids = categories.map(c => c.id);
+  const has = (id) => ids.includes(id);
   for (const [key, val] of Object.entries(CHASE_CAT_MAP)) {
-    if (lower.includes(key)) return val;
+    if (lower.includes(key) && has(val)) return val;
   }
-  if (desc.includes("rent") || desc.includes("mortgage")) return "housing";
-  if (desc.includes("grocer") || desc.includes("whole foods") || desc.includes("trader joe")) return "food";
-  if (desc.includes("uber") || desc.includes("lyft") || desc.includes("gas") || desc.includes("shell") || desc.includes("exxon")) return "transport";
-  if (desc.includes("netflix") || desc.includes("spotify") || desc.includes("hulu") || desc.includes("amazon prime")) return "entertainment";
-  if (desc.includes("gym") || desc.includes("pharmacy") || desc.includes("cvs") || desc.includes("walgreen")) return "health";
-  return "other";
+  if ((desc.includes("rent") || desc.includes("mortgage")) && has("housing")) return "housing";
+  if ((desc.includes("grocer") || desc.includes("whole foods") || desc.includes("trader joe")) && has("food")) return "food";
+  if ((desc.includes("uber") || desc.includes("lyft") || desc.includes("gas") || desc.includes("shell")) && has("transport")) return "transport";
+  if ((desc.includes("netflix") || desc.includes("spotify") || desc.includes("hulu")) && has("entertainment")) return "entertainment";
+  if ((desc.includes("gym") || desc.includes("pharmacy") || desc.includes("cvs")) && has("health")) return "health";
+  return categories[categories.length - 1]?.id || "other";
 }
 
-function parseChaseCSV(text) {
+function parseChaseCSV(text, categories) {
   const lines = text.trim().split("\n").filter(Boolean);
   if (lines.length < 2) return [];
   const results = [];
@@ -50,7 +53,7 @@ function parseChaseCSV(text) {
     const description = clean(cols[2]);
     const chaseCategory = clean(cols[3]);
     const amountRaw = parseFloat(clean(cols[5]));
-    if (isNaN(amountRaw) || amountRaw >= 0) continue; // skip credits
+    if (isNaN(amountRaw) || amountRaw >= 0) continue;
     const amount = Math.abs(amountRaw);
     const date = new Date(txDate);
     if (isNaN(date.getTime())) continue;
@@ -58,7 +61,7 @@ function parseChaseCSV(text) {
       id: Date.now() + i,
       desc: description,
       amount,
-      category: guessCategory(chaseCategory, description),
+      category: guessCategory(chaseCategory, description, categories),
       month: date.getMonth(),
       date: txDate,
       source: "chase",
@@ -73,6 +76,7 @@ export default function BudgetTool() {
   const today = new Date();
   const [activeMonth, setActiveMonth] = useState(today.getMonth());
   const [income, setIncome] = useState(4000);
+  const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
   const [budgets, setBudgets] = useState(initialBudgets);
   const [transactions, setTransactions] = useState([
     { id: 1, desc: "Rent", amount: 1400, category: "housing", month: today.getMonth() },
@@ -88,13 +92,17 @@ export default function BudgetTool() {
   const [importMsg, setImportMsg] = useState(null);
   const fileRef = useRef();
 
+  // Category management state
+  const [editingCat, setEditingCat] = useState(null); // {id, label, icon, color} or "new"
+  const [confirmDeleteCat, setConfirmDeleteCat] = useState(null);
+
   const monthTx = useMemo(() => transactions.filter((t) => t.month === activeMonth), [transactions, activeMonth]);
   const spentByCategory = useMemo(() => {
     const map = {};
-    CATEGORIES.forEach((c) => (map[c.id] = 0));
+    categories.forEach((c) => (map[c.id] = 0));
     monthTx.forEach((t) => (map[t.category] = (map[t.category] || 0) + t.amount));
     return map;
-  }, [monthTx]);
+  }, [monthTx, categories]);
 
   const totalBudget = Object.values(budgets).reduce((a, b) => a + b, 0);
   const totalSpent = Object.values(spentByCategory).reduce((a, b) => a + b, 0);
@@ -103,7 +111,7 @@ export default function BudgetTool() {
   const addTransaction = () => {
     if (!newTx.desc || !newTx.amount) return;
     setTransactions((prev) => [...prev, { id: Date.now(), desc: newTx.desc, amount: parseFloat(newTx.amount), category: newTx.category, month: activeMonth }]);
-    setNewTx({ desc: "", amount: "", category: "food" });
+    setNewTx({ desc: "", amount: "", category: categories[0]?.id || "other" });
   };
   const deleteTx = (id) => setTransactions((prev) => prev.filter((t) => t.id !== id));
 
@@ -112,7 +120,7 @@ export default function BudgetTool() {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (ev) => {
-      const rows = parseChaseCSV(ev.target.result);
+      const rows = parseChaseCSV(ev.target.result, categories);
       if (rows.length === 0) { setImportMsg({ type: "error", text: "No transactions found. Make sure it's a Chase CSV export." }); return; }
       setImportState({ pending: rows.map((r) => ({ ...r, _include: true })) });
       setView("import");
@@ -129,11 +137,90 @@ export default function BudgetTool() {
     setView("transactions");
   };
 
-  const cat = (id) => CATEGORIES.find((c) => c.id === id) || CATEGORIES[6];
+  // Category CRUD
+  const saveCat = (cat) => {
+    if (cat.id === "__new__") {
+      const newId = "cat_" + Date.now();
+      setCategories((prev) => [...prev, { id: newId, label: cat.label, icon: cat.icon, color: cat.color }]);
+      setBudgets((prev) => ({ ...prev, [newId]: 0 }));
+    } else {
+      setCategories((prev) => prev.map((c) => c.id === cat.id ? { ...c, label: cat.label, icon: cat.icon, color: cat.color } : c));
+    }
+    setEditingCat(null);
+  };
+
+  const deleteCat = (id) => {
+    setCategories((prev) => prev.filter((c) => c.id !== id));
+    setBudgets((prev) => { const b = { ...prev }; delete b[id]; return b; });
+    // Reassign transactions to last remaining category
+    const fallback = categories.find(c => c.id !== id)?.id || "other";
+    setTransactions((prev) => prev.map((t) => t.category === id ? { ...t, category: fallback } : t));
+    setConfirmDeleteCat(null);
+  };
+
+  const cat = (id) => categories.find((c) => c.id === id) || categories[categories.length - 1] || DEFAULT_CATEGORIES[6];
   const inp = { padding: "9px 13px", background: "#0f0f13", border: "1px solid #2a2a3e", borderRadius: 8, color: "#e8e8f0", fontSize: 14, outline: "none" };
 
   return (
     <div style={{ fontFamily: "'DM Sans','Helvetica Neue',sans-serif", background: "#0f0f13", minHeight: "100vh", color: "#e8e8f0" }}>
+
+      {/* Category Edit Modal */}
+      {editingCat && (
+        <div style={{ position: "fixed", inset: 0, background: "#000000cc", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div style={{ background: "#1a1a2e", borderRadius: 16, padding: 24, width: "100%", maxWidth: 360, border: "1px solid #2a2a3e" }}>
+            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 20 }}>{editingCat.id === "__new__" ? "Add Category" : "Edit Category"}</div>
+
+            {/* Label */}
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 6, fontWeight: 600 }}>NAME</div>
+              <input value={editingCat.label} onChange={(e) => setEditingCat({ ...editingCat, label: e.target.value })} style={{ ...inp, width: "100%" }} placeholder="Category name" />
+            </div>
+
+            {/* Icon picker */}
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 6, fontWeight: 600 }}>ICON</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {ICONS.map((icon) => (
+                  <button key={icon} onClick={() => setEditingCat({ ...editingCat, icon })} style={{ width: 36, height: 36, borderRadius: 8, border: `2px solid ${editingCat.icon === icon ? "#6366f1" : "#2a2a3e"}`, background: editingCat.icon === icon ? "#6366f120" : "#0f0f13", fontSize: 18, cursor: "pointer" }}>{icon}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* Color picker */}
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 6, fontWeight: 600 }}>COLOR</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {COLORS.map((color) => (
+                  <button key={color} onClick={() => setEditingCat({ ...editingCat, color })} style={{ width: 28, height: 28, borderRadius: "50%", background: color, border: `3px solid ${editingCat.color === color ? "#fff" : "transparent"}`, cursor: "pointer" }} />
+                ))}
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 9 }}>
+              <button onClick={() => saveCat(editingCat)} disabled={!editingCat.label.trim()} style={{ flex: 1, padding: "11px", background: editingCat.label.trim() ? "#6366f1" : "#2a2a3e", border: "none", borderRadius: 9, color: "#fff", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>
+                {editingCat.id === "__new__" ? "Add Category" : "Save Changes"}
+              </button>
+              <button onClick={() => setEditingCat(null)} style={{ padding: "11px 16px", background: "#0f0f13", border: "1px solid #2a2a3e", borderRadius: 9, color: "#9ca3af", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete confirm modal */}
+      {confirmDeleteCat && (
+        <div style={{ position: "fixed", inset: 0, background: "#000000cc", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div style={{ background: "#1a1a2e", borderRadius: 16, padding: 24, width: "100%", maxWidth: 320, border: "1px solid #2a2a3e" }}>
+            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 10 }}>Delete Category?</div>
+            <div style={{ fontSize: 13, color: "#9ca3af", marginBottom: 20 }}>
+              All transactions in <strong style={{ color: "#e8e8f0" }}>{cat(confirmDeleteCat).icon} {cat(confirmDeleteCat).label}</strong> will be moved to <strong style={{ color: "#e8e8f0" }}>{categories.find(c => c.id !== confirmDeleteCat)?.label}</strong>.
+            </div>
+            <div style={{ display: "flex", gap: 9 }}>
+              <button onClick={() => deleteCat(confirmDeleteCat)} style={{ flex: 1, padding: "11px", background: "#ef4444", border: "none", borderRadius: 9, color: "#fff", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>Delete</button>
+              <button onClick={() => setConfirmDeleteCat(null)} style={{ padding: "11px 16px", background: "#0f0f13", border: "1px solid #2a2a3e", borderRadius: 9, color: "#9ca3af", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Header */}
       <div style={{ background: "linear-gradient(135deg,#1a1a2e,#16213e)", borderBottom: "1px solid #2a2a3e", padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
@@ -142,7 +229,7 @@ export default function BudgetTool() {
           <div style={{ fontSize: 11, color: "#6b7280" }}>Personal finance tracker</div>
         </div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {["dashboard","transactions","budgets"].map((v) => (
+          {["dashboard","transactions","budgets","categories"].map((v) => (
             <button key={v} onClick={() => setView(v)} style={{ padding: "6px 13px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600, textTransform: "capitalize", background: view === v ? "#6366f1" : "#1e1e2e", color: view === v ? "#fff" : "#9ca3af" }}>{v}</button>
           ))}
           <button onClick={() => fileRef.current.click()} style={{ padding: "6px 13px", borderRadius: 8, border: "1px solid #2a2a3e", background: "#1e1e2e", color: "#f59e0b", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>🏦 Import CSV</button>
@@ -183,7 +270,7 @@ export default function BudgetTool() {
 
           <div style={{ background: "#1a1a2e", borderRadius: 13, padding: 16, border: "1px solid #2a2a3e", marginBottom: 14 }}>
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 13 }}>Category Breakdown</div>
-            {CATEGORIES.map((c) => {
+            {categories.map((c) => {
               const spent = spentByCategory[c.id] || 0, budget = budgets[c.id] || 0;
               const pct = budget > 0 ? Math.min((spent / budget) * 100, 100) : 0, over = spent > budget;
               return (
@@ -206,7 +293,7 @@ export default function BudgetTool() {
               <input value={newTx.desc} onChange={(e) => setNewTx({ ...newTx, desc: e.target.value })} placeholder="Description" style={{ ...inp, flex: "2 1 130px" }} />
               <input value={newTx.amount} onChange={(e) => setNewTx({ ...newTx, amount: e.target.value })} placeholder="$ Amount" type="number" style={{ ...inp, flex: "1 1 90px" }} />
               <select value={newTx.category} onChange={(e) => setNewTx({ ...newTx, category: e.target.value })} style={{ ...inp, flex: "1 1 110px" }}>
-                {CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}
+                {categories.map((c) => <option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}
               </select>
               <button onClick={addTransaction} style={{ padding: "9px 16px", background: "#6366f1", border: "none", borderRadius: 8, color: "#fff", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>+ Add</button>
             </div>
@@ -227,11 +314,11 @@ export default function BudgetTool() {
               <input value={newTx.desc} onChange={(e) => setNewTx({ ...newTx, desc: e.target.value })} placeholder="Description" style={{ ...inp, flex: "2 1 130px" }} />
               <input value={newTx.amount} onChange={(e) => setNewTx({ ...newTx, amount: e.target.value })} placeholder="$" type="number" style={{ ...inp, flex: "1 1 80px" }} />
               <select value={newTx.category} onChange={(e) => setNewTx({ ...newTx, category: e.target.value })} style={{ ...inp, flex: "1 1 110px" }}>
-                {CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}
+                {categories.map((c) => <option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}
               </select>
               <button onClick={addTransaction} style={{ padding: "9px 14px", background: "#6366f1", border: "none", borderRadius: 8, color: "#fff", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>+ Add</button>
             </div>
-            {monthTx.length === 0 && <div style={{ textAlign: "center", color: "#4b5563", padding: "36px 0", fontSize: 13 }}>No transactions for {MONTHS[activeMonth]}. Add one above or import a Chase CSV.</div>}
+            {monthTx.length === 0 && <div style={{ textAlign: "center", color: "#4b5563", padding: "36px 0", fontSize: 13 }}>No transactions for {MONTHS[activeMonth]}.</div>}
             <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
               {[...monthTx].reverse().map((t) => {
                 const c = cat(t.category);
@@ -274,7 +361,7 @@ export default function BudgetTool() {
                       <div style={{ fontSize: 11, color: "#6b7280" }}>{r.date}</div>
                     </div>
                     <select value={r.category} onChange={(e) => setImportState((prev) => ({ ...prev, pending: prev.pending.map((x) => x.id === r.id ? { ...x, category: e.target.value } : x) }))} style={{ ...inp, fontSize: 12, padding: "5px 8px", flexShrink: 0 }}>
-                      {CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}
+                      {categories.map((c) => <option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}
                     </select>
                     <span style={{ fontWeight: 700, fontSize: 13, flexShrink: 0 }}>{fmt(r.amount)}</span>
                   </div>
@@ -286,6 +373,34 @@ export default function BudgetTool() {
                 ✅ Import {importState.pending.filter(r => r._include).length} Transactions
               </button>
               <button onClick={() => { setImportState(null); setView("transactions"); }} style={{ padding: "11px 16px", background: "#1e1e2e", border: "1px solid #2a2a3e", borderRadius: 9, color: "#9ca3af", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>Cancel</button>
+            </div>
+          </div>
+        )}
+
+        {/* CATEGORIES */}
+        {view === "categories" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ fontSize: 15, fontWeight: 700 }}>Manage Categories</div>
+              <button onClick={() => setEditingCat({ id: "__new__", label: "", icon: "📦", color: "#6366f1" })} style={{ padding: "7px 14px", background: "#6366f1", border: "none", borderRadius: 8, color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>+ Add Category</button>
+            </div>
+            {categories.map((c) => (
+              <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "13px 14px", background: "#1a1a2e", borderRadius: 12, border: "1px solid #2a2a3e" }}>
+                <div style={{ width: 38, height: 38, borderRadius: 10, background: `${c.color}22`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}>{c.icon}</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14 }}>{c.label}</div>
+                  <div style={{ fontSize: 11, color: "#6b7280", marginTop: 1 }}>
+                    {transactions.filter(t => t.category === c.id).length} transactions · Budget {fmt(budgets[c.id] || 0)}
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button onClick={() => setEditingCat({ ...c })} style={{ padding: "6px 12px", background: "#1e1e2e", border: "1px solid #2a2a3e", borderRadius: 7, color: "#9ca3af", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>✏️ Edit</button>
+                  <button onClick={() => setConfirmDeleteCat(c.id)} disabled={categories.length <= 1} style={{ padding: "6px 12px", background: "#1e1e2e", border: "1px solid #2a2a3e", borderRadius: 7, color: categories.length <= 1 ? "#374151" : "#ef4444", fontSize: 12, fontWeight: 600, cursor: categories.length <= 1 ? "not-allowed" : "pointer" }}>🗑️ Delete</button>
+                </div>
+              </div>
+            ))}
+            <div style={{ fontSize: 12, color: "#4b5563", textAlign: "center", paddingTop: 4 }}>
+              {categories.length} categories · Deleting moves transactions to the first available category
             </div>
           </div>
         )}
@@ -306,14 +421,14 @@ export default function BudgetTool() {
                 <div style={{ fontSize: 12, color: totalBudget > income ? "#ef4444" : "#10b981", fontWeight: 600 }}>{fmt(totalBudget)} / {fmt(income)}</div>
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {CATEGORIES.map((c) => (
+                {categories.map((c) => (
                   <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <div style={{ width: 32, height: 32, borderRadius: 7, background: `${c.color}22`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>{c.icon}</div>
                     <div style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>{c.label}</div>
                     {editingBudget === c.id
                       ? <input autoFocus type="number" defaultValue={budgets[c.id]} onBlur={(e) => { setBudgets({ ...budgets, [c.id]: parseFloat(e.target.value) || 0 }); setEditingBudget(null); }} onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} style={{ ...inp, width: 88, border: `1px solid ${c.color}`, textAlign: "right", fontWeight: 700 }} />
-                      : <button onClick={() => setEditingBudget(c.id)} style={{ ...inp, cursor: "pointer", fontWeight: 700 }}>{fmt(budgets[c.id])}</button>}
-                    <div style={{ width: 40, fontSize: 11, color: "#6b7280", textAlign: "right" }}>{income > 0 ? `${((budgets[c.id] / income) * 100).toFixed(0)}%` : "—"}</div>
+                      : <button onClick={() => setEditingBudget(c.id)} style={{ ...inp, cursor: "pointer", fontWeight: 700 }}>{fmt(budgets[c.id] || 0)}</button>}
+                    <div style={{ width: 40, fontSize: 11, color: "#6b7280", textAlign: "right" }}>{income > 0 ? `${(((budgets[c.id] || 0) / income) * 100).toFixed(0)}%` : "—"}</div>
                   </div>
                 ))}
               </div>
